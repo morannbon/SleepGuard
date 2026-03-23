@@ -27,7 +27,6 @@ public class MonitorService : IDisposable
     private AppSettings _settings = SettingsManager.Load();
     private readonly object _settingsLock = new();
     private readonly object _timerLock = new();
-    private bool _timerRunning;
 
     private System.Timers.Timer? _timer;
     private bool _isSleepPrevented;

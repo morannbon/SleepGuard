@@ -6,7 +6,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using Microsoft.Win32;
-
 namespace SleepGuard;
 
 public partial class MainWindow : Window
@@ -55,7 +54,6 @@ public partial class MainWindow : Window
 
         // 3行スクロール設定 (1行約42px × 3 = 126px)
         const double threeLineScroll = 126.0;
-        ProcessListScrollViewer.ScrollChanged += (_, _) => { };
         ProcessListScrollViewer.PreviewMouseWheel += (s, e) =>
         {
             var sv = (ScrollViewer)s;
@@ -343,13 +341,13 @@ public partial class MainWindow : Window
     }
 
     // ─── Running process picker ───────────────────────────────────
-    private record ProcessInfo(string Name, int Pid);
+    private record ProcessInfo(string Name);
 
     private void LoadRunningProcesses()
     {
         _allRunningProcesses = Process.GetProcesses()
             .Where(p => { try { return p.SessionId > 0; } catch { return false; } })
-            .Select(p => { var n = p.ProcessName; p.Dispose(); return new ProcessInfo(n, 0); })
+            .Select(p => { var n = p.ProcessName; p.Dispose(); return new ProcessInfo(n); })
             .DistinctBy(p => p.Name.ToLowerInvariant())
             .Where(p => !string.IsNullOrWhiteSpace(p.Name))
             .OrderBy(p => p.Name)
@@ -483,11 +481,9 @@ public partial class MainWindow : Window
         });
         var msgColor = type switch
         {
-            "active"   => "#22D3A5",
-            "released" => "#F59E0B",
-            "error"    => "#F87171",
-            "warn"     => "#F59E0B",
-            _          => "#C8C4DC"
+            "error" => "#F87171",
+            "warn"  => "#F59E0B",
+            _       => "#C8C4DC"
         };
         sp.Children.Add(new TextBlock
         {
