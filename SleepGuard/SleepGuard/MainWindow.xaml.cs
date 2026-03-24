@@ -637,16 +637,21 @@ public partial class MainWindow : Window
 
     private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
     {
-        // UIのチェックボックス値を参照（ディスクI/Oなし）
         if (ResidentModeChk?.IsChecked == true)
         {
+            // 常駐モード ON: ウィンドウを隠してトレイに残す
             e.Cancel = true;
             Hide();
         }
         else
         {
+            // 常駐モード OFF: イベント購読を解除してからプロセス終了
             e.Cancel = false;
-            ((App)Application.Current).RequestExit();
+            _monitor.StatusUpdated -= OnStatusUpdated;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ((App)Application.Current).RequestExit();
+            }));
         }
     }
 }

@@ -9,20 +9,25 @@ public partial class App : Application
     private TaskbarIcon?     _trayIcon;
     private MonitorService?  _monitorService;
     private MainWindow?      _mainWindow;
+    private System.Threading.Mutex? _mutex;
 
-    // トレイアイコンをキャッシュ（状態ごとに一度だけ生成）
     private System.Drawing.Icon? _iconActive;
     private System.Drawing.Icon? _iconInactive;
-
-    // 一時停止フラグ
     private bool _isPaused;
 
     internal void RequestExit()
     {
+        // イベント購読を先に解除してDispose후の呼び出しを防ぐ
+        if (_monitorService != null)
+            _monitorService.StatusChanged -= OnMonitorStatusChanged;
         _monitorService?.Stop();
         _trayIcon?.Dispose();
         _iconActive?.Dispose();
         _iconInactive?.Dispose();
+        _iconActive   = null;
+        _iconInactive = null;
+        _mutex?.ReleaseMutex();
+        _mutex?.Dispose();
         Shutdown();
     }
 
@@ -126,6 +131,18 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // 多重起動防止
+        _mutex = new System.Threading.Mutex(true, "SleepGuard_SingleInstance", out bool createdNew);
+        if (!createdNew)
+        {
+            // 既に起動中 → そちらのウィンドウを前面に出して終了
+            MessageBox.Show("SleepGuard は既に起動しています。\nタスクトレイを確認してください。",
+                "SleepGuard", MessageBoxButton.OK, MessageBoxImage.Information);
+            _mutex.Dispose();
+            Shutdown();
+            return;
+        }
+
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
             var msg = args.ExceptionObject is Exception ex ? ex.ToString() : args.ExceptionObject?.ToString();
@@ -182,14 +199,18 @@ public partial class App : Application
 
     private void OnMonitorStatusChanged(bool isSleepPrevented)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.BeginInvoke(() =>
         {
-            if (_trayIcon == null) return;
-            // キャッシュ済みアイコンを切り替えるだけ（GDI描画なし）
-            _trayIcon.Icon       = isSleepPrevented ? _iconActive : _iconInactive;
-            _trayIcon.ToolTipText = isSleepPrevented
-                ? "SleepGuard - スリープ防止中"
-                : "SleepGuard - 待機中";
+            // Dispose済みの場合はスキップ
+            if (_trayIcon == null || _iconActive == null || _iconInactive == null) return;
+            try
+            {
+                _trayIcon.Icon        = isSleepPrevented ? _iconActive : _iconInactive;
+                _trayIcon.ToolTipText = isSleepPrevented
+                    ? "SleepGuard - スリープ防止中"
+                    : "SleepGuard - 待機中";
+            }
+            catch (ObjectDisposedException) { /* 終了処理中は無視 */ }
         });
     }
 
@@ -204,6 +225,67 @@ public partial class App : Application
 
     private static System.Drawing.Icon CreateIcon(bool active)
     {
+        try
+        {
+            var uri    = new Uri("pack://application:,,,/SleepGuard;component/Resources/icon.ico");
+            var stream = System.Windows.Application.GetResourceStream(uri)?.Stream;
+            if (stream != null)
+            {
+                using (stream)
+                using (var icon = new System.Drawing.Icon(stream, 16, 16))
+                {
+                    if (active)
+                        return (System.Drawing.Icon)icon.Clone();
+                    return ToGrayscaleIcon(icon);
+                }
+            }
+        }
+        catch { }
+        return CreateFallbackIcon(active);
+    }
+
+    private static System.Drawing.Icon ToGrayscaleIcon(System.Drawing.Icon icon)
+    {
+        using var src = icon.ToBitmap();
+        using var dst = new System.Drawing.Bitmap(src.Width, src.Height,
+            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+        // LockBitsで高速ピクセル処理
+        var rect = new System.Drawing.Rectangle(0, 0, src.Width, src.Height);
+        var fmt  = System.Drawing.Imaging.PixelFormat.Format32bppArgb;
+        var srcData = src.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly,  fmt);
+        var dstData = dst.LockBits(rect, System.Drawing.Imaging.ImageLockMode.WriteOnly, fmt);
+        try
+        {
+            int bytes = Math.Abs(srcData.Stride) * src.Height;
+            var buf   = new byte[bytes];
+            System.Runtime.InteropServices.Marshal.Copy(srcData.Scan0, buf, 0, bytes);
+            for (int i = 0; i < bytes; i += 4)
+            {
+                byte b = buf[i], g = buf[i + 1], r = buf[i + 2], a = buf[i + 3];
+                byte gs = (byte)(r * 0.299 + g * 0.587 + b * 0.114);
+                buf[i] = buf[i + 1] = buf[i + 2] = gs;
+                buf[i + 3] = (byte)(a / 2); // 半透明で非アクティブ感を表現
+            }
+            System.Runtime.InteropServices.Marshal.Copy(buf, 0, dstData.Scan0, bytes);
+        }
+        finally
+        {
+            src.UnlockBits(srcData);
+            dst.UnlockBits(dstData);
+        }
+
+        var hIcon = dst.GetHicon();
+        try
+        {
+            using var tmp = System.Drawing.Icon.FromHandle(hIcon);
+            return (System.Drawing.Icon)tmp.Clone();
+        }
+        finally { DestroyIcon(hIcon); }
+    }
+
+    private static System.Drawing.Icon CreateFallbackIcon(bool active)
+    {
         const int size = 16;
         using var bmp = new System.Drawing.Bitmap(
             size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
@@ -211,28 +293,19 @@ public partial class App : Application
         {
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.Clear(System.Drawing.Color.Transparent);
-            var outer = active
-                ? System.Drawing.Color.FromArgb(180, 22, 211, 165)
-                : System.Drawing.Color.FromArgb(120, 100, 100, 120);
-            using var b1 = new System.Drawing.SolidBrush(outer);
-            g.FillEllipse(b1, 0, 0, size - 1, size - 1);
-            var inner = active
+            var color = active
                 ? System.Drawing.Color.FromArgb(255, 34, 211, 165)
-                : System.Drawing.Color.FromArgb(200, 90, 88, 110);
-            using var b2 = new System.Drawing.SolidBrush(inner);
-            g.FillEllipse(b2, 2, 2, size - 5, size - 5);
+                : System.Drawing.Color.FromArgb(180, 100, 100, 120);
+            using var b = new System.Drawing.SolidBrush(color);
+            g.FillEllipse(b, 1, 1, size - 2, size - 2);
         }
-        // GetHicon→Clone→DestroyIcon の正しいパターン
         var hIcon = bmp.GetHicon();
         try
         {
             using var tmp = System.Drawing.Icon.FromHandle(hIcon);
             return (System.Drawing.Icon)tmp.Clone();
         }
-        finally
-        {
-            DestroyIcon(hIcon);
-        }
+        finally { DestroyIcon(hIcon); }
     }
 
     [DllImport("user32.dll")]
@@ -240,10 +313,16 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        if (_monitorService != null)
+            _monitorService.StatusChanged -= OnMonitorStatusChanged;
         _monitorService?.Stop();
         _trayIcon?.Dispose();
         _iconActive?.Dispose();
         _iconInactive?.Dispose();
+        _iconActive   = null;
+        _iconInactive = null;
+        try { _mutex?.ReleaseMutex(); } catch { }
+        _mutex?.Dispose();
         base.OnExit(e);
     }
 }

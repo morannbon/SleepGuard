@@ -73,6 +73,8 @@ public class SettingsManager
 
     // ログ有効フラグのキャッシュ（WriteLogのたびにディスクを読まないため）
     private static bool _logEnabled = true;
+    // ローテーションチェックを100回に1回に間引く
+    private static int _logWriteCount = 0;
 
     public static AppSettings Load()
     {
@@ -108,7 +110,12 @@ public class SettingsManager
         try
         {
             Directory.CreateDirectory(ConfigDir);
-            RotateLogIfNeeded();
+            // 100回に1回だけローテーションチェック（FileInfo生成コストを削減）
+            if (++_logWriteCount >= 100)
+            {
+                _logWriteCount = 0;
+                RotateLogIfNeeded();
+            }
             var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {message}{Environment.NewLine}";
             File.AppendAllText(LogPath, line, System.Text.Encoding.UTF8);
         }

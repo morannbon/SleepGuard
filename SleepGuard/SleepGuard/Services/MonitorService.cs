@@ -43,8 +43,15 @@ public class MonitorService : IDisposable
 
     public void Start()
     {
+        // 既に起動中の場合は一度止めてから再起動
+        if (_timer != null)
+        {
+            _timer.Stop();
+            _timer.Dispose();
+            _timer = null;
+        }
         _timer = new System.Timers.Timer(GetIntervalMs());
-        _timer.Elapsed += OnTimerElapsed;
+        _timer.Elapsed  += OnTimerElapsed;
         _timer.AutoReset = true;
         _timer.Start();
         SettingsManager.WriteLog("SleepGuard 監視開始");
