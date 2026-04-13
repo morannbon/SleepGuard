@@ -1,0 +1,53 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Background -->
+    <Color x:Key="BgDeepColor">#FF0F0E13</Color>
+    <Color x:Key="BgSurfaceColor">#FF1A1825</Color>
+    <Color x:Key="BgSurface2Color">#FF221F32</Color>
+    <Color x:Key="BgSurface3Color">#FF2C283E</Color>
+
+    <!-- Accent -->
+    <Color x:Key="AccentColor">#FF6C63FF</Color>
+    <Color x:Key="Accent2Color">#FFA78BFA</Color>
+
+    <!-- Semantic -->
+    <Color x:Key="GreenColor">#FF22D3A5</Color>
+    <Color x:Key="GreenDimColor">#1A22D3A5</Color>
+    <Color x:Key="AmberColor">#FFF59E0B</Color>
+    <Color x:Key="AmberDimColor">#1AF59E0B</Color>
+    <Color x:Key="RedColor">#FFF87171</Color>
+    <Color x:Key="RedDimColor">#1AF87171</Color>
+
+    <!-- Text -->
+    <Color x:Key="TextPrimaryColor">#FFE8E4F0</Color>
+    <Color x:Key="TextSecondaryColor">#FF9990B8</Color>
+    <Color x:Key="TextTertiaryColor">#FF5C5680</Color>
+
+    <!-- Borders -->
+    <Color x:Key="BorderColor">#1AFFFFFF</Color>
+    <Color x:Key="Border2Color">#26FFFFFF</Color>
+
+    <!-- Brushes -->
+    <SolidColorBrush x:Key="BgDeepBrush"      Color="{StaticResource BgDeepColor}"/>
+    <SolidColorBrush x:Key="BgSurfaceBrush"   Color="{StaticResource BgSurfaceColor}"/>
+    <SolidColorBrush x:Key="BgSurface2Brush"  Color="{StaticResource BgSurface2Color}"/>
+    <SolidColorBrush x:Key="BgSurface3Brush"  Color="{StaticResource BgSurface3Color}"/>
+    <SolidColorBrush x:Key="AccentBrush"      Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="Accent2Brush"     Color="{StaticResource Accent2Color}"/>
+    <SolidColorBrush x:Key="GreenBrush"       Color="{StaticResource GreenColor}"/>
+    <SolidColorBrush x:Key="AmberBrush"       Color="{StaticResource AmberColor}"/>
+    <SolidColorBrush x:Key="RedBrush"         Color="{StaticResource RedColor}"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush"   Color="{StaticResource TextPrimaryColor}"/>
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="{StaticResource TextSecondaryColor}"/>
+    <SolidColorBrush x:Key="TextTertiaryBrush"  Color="{StaticResource TextTertiaryColor}"/>
+    <SolidColorBrush x:Key="BorderBrush"      Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="Border2Brush"     Color="{StaticResource Border2Color}"/>
+
+    <!-- Gradient accent -->
+    <LinearGradientBrush x:Key="AccentGradientBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="{StaticResource AccentColor}"  Offset="0"/>
+        <GradientStop Color="{StaticResource Accent2Color}" Offset="1"/>
+    </LinearGradientBrush>
+
+</ResourceDictionary>
