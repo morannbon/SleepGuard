@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Timers;
@@ -6,15 +5,17 @@ using System.Timers;
 namespace SleepGuard;
 
 /// <summary>
-/// プロセス監視とスリープ防止を担当するサービス。
-///
-/// SetThreadExecutionState はスレッドに紐付く API のため、
-/// Prevent/Allow を必ず同一スレッドから呼ぶ専用スレッドを用意している。
-/// これにより「別スレッドから Allow しても効かない」問題を根本解決している。
+/// プロセス監視とスリープ防止を担当するサービス
+/// 改善点:
+///   - タイマーコールバック毎のディスク読み込み(Load)を廃止しメモリキャッシュを使用
+///   - Process.GetProcessesByName後のDispose漏れを修正
+///   - UIへの通知を状態変化時のみに絞り不要なDispatch/再描画を削減
+///   - タイマー重複実行防止のためのロック追加
+///   - Process配列の即時Dispose
 /// </summary>
 public class MonitorService : IDisposable
 {
-    // ── Win32 API ────────────────────────────────────────────────
+    // ─── Win32 API ───────────────────────────────────────────────
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint SetThreadExecutionState(uint esFlags);
 
@@ -22,52 +23,36 @@ public class MonitorService : IDisposable
     private const uint ES_SYSTEM_REQUIRED  = 0x00000001u;
     private const uint ES_DISPLAY_REQUIRED = 0x00000002u;
 
-    // ── SetThreadExecutionState 専用スレッド ─────────────────────
-    private readonly Thread _sleepControlThread;
-    private readonly BlockingCollection<Action> _sleepControlQueue = new();
-
-    // ── 状態 ─────────────────────────────────────────────────────
+    // ─── State ───────────────────────────────────────────────────
     private AppSettings _settings = SettingsManager.Load();
     private readonly object _settingsLock = new();
-    private readonly object _timerLock   = new();
+    private readonly object _timerLock = new();
 
     private System.Timers.Timer? _timer;
-    private bool      _isSleepPrevented;
+    private bool _isSleepPrevented;
     private DateTime? _allStoppedAt;
     private List<string> _lastRunningProcs = new();
     private bool _disposed;
 
-    // ── イベント ─────────────────────────────────────────────────
-    public event Action<bool>?         StatusChanged;
+    // ─── Events ──────────────────────────────────────────────────
+    public event Action<bool>? StatusChanged;
     public event Action<MonitorStatus>? StatusUpdated;
 
-    // ── パブリック ────────────────────────────────────────────────
+    // ─── Public API ──────────────────────────────────────────────
     public bool IsSleepPrevented => _isSleepPrevented;
-
-    public MonitorService()
-    {
-        _sleepControlThread = new Thread(() =>
-        {
-            foreach (var action in _sleepControlQueue.GetConsumingEnumerable())
-                action();
-        })
-        {
-            IsBackground = true,
-            Name = "SleepControlThread"
-        };
-        _sleepControlThread.Start();
-    }
 
     public void Start()
     {
-        _timer?.Stop();
-        _timer?.Dispose();
-
-        _timer = new System.Timers.Timer(GetIntervalMs())
+        // 既に起動中の場合は一度止めてから再起動
+        if (_timer != null)
         {
-            AutoReset = true
-        };
-        _timer.Elapsed += OnTimerElapsed;
+            _timer.Stop();
+            _timer.Dispose();
+            _timer = null;
+        }
+        _timer = new System.Timers.Timer(GetIntervalMs());
+        _timer.Elapsed  += OnTimerElapsed;
+        _timer.AutoReset = true;
         _timer.Start();
         SettingsManager.WriteLog("SleepGuard 監視開始");
     }
@@ -77,11 +62,11 @@ public class MonitorService : IDisposable
         _timer?.Stop();
         _timer?.Dispose();
         _timer = null;
-        AllowSleepSync();  // 専用スレッド経由で確実に解除してから戻る
+        AllowSleep();
         SettingsManager.WriteLog("SleepGuard 監視停止");
     }
 
-    /// <summary>設定変更時に呼ぶ。タイマー間隔も即時反映する。</summary>
+    /// <summary>設定変更時に呼ぶ。ディスクから再読み込みしタイマー間隔を更新。</summary>
     public void ReloadSettings()
     {
         var s = SettingsManager.Load();
@@ -90,12 +75,19 @@ public class MonitorService : IDisposable
             _timer.Interval = GetIntervalMs();
     }
 
-    // ── タイマー ─────────────────────────────────────────────────
+    // ─── Timer callback ─────────────────────────────────────────
     private void OnTimerElapsed(object? sender, ElapsedEventArgs e)
     {
-        if (!Monitor.TryEnter(_timerLock)) return;  // 前回が未完了なら今回はスキップ
-        try { Tick(); }
-        finally { Monitor.Exit(_timerLock); }
+        // 前回のコールバックがまだ実行中なら今回はスキップ（重複防止）
+        if (!Monitor.TryEnter(_timerLock)) return;
+        try
+        {
+            Tick();
+        }
+        finally
+        {
+            Monitor.Exit(_timerLock);
+        }
     }
 
     private void Tick()
@@ -103,8 +95,10 @@ public class MonitorService : IDisposable
         AppSettings settings;
         lock (_settingsLock) { settings = _settings; }
 
+        // 登録プロセスがなければ何もしない
         if (settings.WatchedProcesses.Count == 0)
         {
+            // 念のためスリープ防止を解除
             if (_isSleepPrevented) AllowSleep();
             return;
         }
@@ -115,6 +109,7 @@ public class MonitorService : IDisposable
         if (anyRunning)
         {
             _allStoppedAt = null;
+
             if (!_isSleepPrevented)
             {
                 PreventSleep(settings);
@@ -127,8 +122,10 @@ public class MonitorService : IDisposable
             if (_isSleepPrevented)
             {
                 _allStoppedAt ??= DateTime.Now;
-                var remaining = TimeSpan.FromMinutes(settings.SleepDelayMinutes)
-                                - (DateTime.Now - _allStoppedAt.Value);
+
+                var elapsed   = DateTime.Now - _allStoppedAt.Value;
+                var remaining = TimeSpan.FromMinutes(settings.SleepDelayMinutes) - elapsed;
+
                 if (remaining <= TimeSpan.Zero)
                 {
                     AllowSleep();
@@ -139,12 +136,13 @@ public class MonitorService : IDisposable
             }
         }
 
-        // UI 通知は状態変化時のみ（不要な再描画を抑制）
+        // 状態変化があった時だけUIへ通知（不要な再描画を抑制）
         bool procsChanged = !runningProcs.SequenceEqual(_lastRunningProcs);
         if (procsChanged || _allStoppedAt.HasValue)
         {
             _lastRunningProcs = runningProcs;
-            StatusUpdated?.Invoke(new MonitorStatus
+
+            var status = new MonitorStatus
             {
                 IsSleepPrevented = _isSleepPrevented,
                 RunningProcesses = runningProcs,
@@ -152,14 +150,15 @@ public class MonitorService : IDisposable
                 DelayMinutes     = settings.SleepDelayMinutes,
                 WatchedCount     = settings.WatchedProcesses.Count,
                 CheckedAt        = DateTime.Now
-            });
+            };
+            StatusUpdated?.Invoke(status);
         }
     }
 
-    // ── プロセス検索 ─────────────────────────────────────────────
+    // ─── Process detection ───────────────────────────────────────
     /// <summary>
-    /// 監視対象のうち実行中のプロセス名一覧を返す。
-    /// Process 配列は使用後即 Dispose してハンドルを解放する。
+    /// 監視対象プロセスのうち現在実行中のもの一覧を返す。
+    /// Process配列は使用後即Disposeしてハンドルを解放する。
     /// </summary>
     public List<string> GetRunningWatchedProcesses(AppSettings? settings = null)
     {
@@ -182,6 +181,7 @@ public class MonitorService : IDisposable
             catch { /* アクセス拒否・権限不足は無視 */ }
             finally
             {
+                // Processオブジェクトはハンドルを保持するので必ずDispose
                 if (procs != null)
                     foreach (var p in procs) p.Dispose();
             }
@@ -189,23 +189,21 @@ public class MonitorService : IDisposable
         return running;
     }
 
-    // ── スリープ制御 ─────────────────────────────────────────────
+    // ─── Sleep control ───────────────────────────────────────────
     private void PreventSleep(AppSettings settings)
     {
         var flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED;
         if (settings.PreventDisplaySleep)
             flags |= ES_DISPLAY_REQUIRED;
 
-        if (_sleepControlQueue.IsAddingCompleted) return;
-        _sleepControlQueue.Add(() => SetThreadExecutionState(flags));
+        SetThreadExecutionState(flags);
         _isSleepPrevented = true;
         StatusChanged?.Invoke(true);
     }
 
     private void AllowSleep()
     {
-        if (_sleepControlQueue.IsAddingCompleted) return;
-        _sleepControlQueue.Add(AllowSleepCore);
+        SetThreadExecutionState(ES_CONTINUOUS);
         if (_isSleepPrevented)
         {
             _isSleepPrevented = false;
@@ -213,44 +211,13 @@ public class MonitorService : IDisposable
         }
     }
 
-    /// <summary>Stop/Dispose 時に専用スレッドの完了を待つ同期版。</summary>
-    private void AllowSleepSync()
-    {
-        if (_sleepControlQueue.IsAddingCompleted) return;
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _sleepControlQueue.Add(() =>
-        {
-            AllowSleepCore();
-            tcs.SetResult(true);
-        });
-        tcs.Task.GetAwaiter().GetResult();
-    }
-
-    private void AllowSleepCore() => SetThreadExecutionState(ES_CONTINUOUS);
-
-    // ── 現在状態スナップショット ──────────────────────────────────
-    /// <summary>ウィンドウ再表示時の UI 初期化に使用する。</summary>
-    public MonitorStatus GetCurrentStatus()
-    {
-        AppSettings settings;
-        lock (_settingsLock) { settings = _settings; }
-        var runningProcs = GetRunningWatchedProcesses(settings);
-        return new MonitorStatus
-        {
-            IsSleepPrevented = _isSleepPrevented,
-            RunningProcesses = runningProcs,
-            CountdownStartAt = _allStoppedAt,
-            DelayMinutes     = settings.SleepDelayMinutes,
-            WatchedCount     = settings.WatchedProcesses.Count,
-            CheckedAt        = DateTime.Now
-        };
-    }
-
-    // ── ヘルパー ─────────────────────────────────────────────────
+    // ─── Helpers ─────────────────────────────────────────────────
     private double GetIntervalMs()
     {
         lock (_settingsLock)
+        {
             return Math.Max(5, _settings.CheckIntervalSeconds) * 1000.0;
+        }
     }
 
     public void Dispose()
@@ -258,7 +225,6 @@ public class MonitorService : IDisposable
         if (_disposed) return;
         _disposed = true;
         Stop();
-        _sleepControlQueue.CompleteAdding();
         GC.SuppressFinalize(this);
     }
 }
@@ -266,14 +232,14 @@ public class MonitorService : IDisposable
 /// <summary>監視状態のスナップショット</summary>
 public record MonitorStatus
 {
-    public bool          IsSleepPrevented { get; init; }
-    public List<string>  RunningProcesses { get; init; } = new();
-    public DateTime?     CountdownStartAt { get; init; }
-    public int           DelayMinutes     { get; init; }
-    public int           WatchedCount     { get; init; }
-    public DateTime      CheckedAt        { get; init; }
+    public bool IsSleepPrevented { get; init; }
+    public List<string> RunningProcesses { get; init; } = new();
+    public DateTime? CountdownStartAt { get; init; }
+    public int DelayMinutes { get; init; }
+    public int WatchedCount { get; init; }
+    public DateTime CheckedAt { get; init; }
 
-    /// <summary>カウントダウン残り秒。カウントダウン中でなければ null。</summary>
+    /// <summary>カウントダウン残り秒 (null = カウントダウン中でない)</summary>
     public double? RemainingSeconds =>
         CountdownStartAt.HasValue
             ? Math.Max(0, (DelayMinutes * 60) - (CheckedAt - CountdownStartAt.Value).TotalSeconds)

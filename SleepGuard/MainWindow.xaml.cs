@@ -11,8 +11,7 @@ namespace SleepGuard;
 public partial class MainWindow : Window
 {
     private readonly MonitorService _monitor;
-    private bool         _suppressSettingsChange;
-    private AppSettings  _cachedSettings = SettingsManager.Load();  // タイマー更新時のディスクI/O排除用
+    private bool _suppressSettingsChange;
     private List<ProcessInfo> _allRunningProcesses = new();
 
     // ブラシキャッシュ（Freeze済みでGC負荷軽減・スレッドセーフ）
@@ -76,8 +75,7 @@ public partial class MainWindow : Window
 
         LoadSettings();
         RefreshProcessList();
-        // ウィンドウ開き直し時も現在の実際の状態でUIを初期化する
-        UpdateStatusUI(_monitor.GetCurrentStatus());
+        UpdateStatusUI(new MonitorStatus());
         LoadRunningProcesses();
     }
 
@@ -86,7 +84,6 @@ public partial class MainWindow : Window
     {
         _suppressSettingsChange = true;
         var s = SettingsManager.Load();
-        _cachedSettings             = s;
         SleepDelaySlider.Value      = s.SleepDelayMinutes;
         CheckIntervalSlider.Value   = s.CheckIntervalSeconds;
         PreventDisplayChk.IsChecked = s.PreventDisplaySleep;
@@ -108,7 +105,7 @@ public partial class MainWindow : Window
     private void SaveCurrentSettings()
     {
         if (!IsUiReady) return;
-        // WatchedProcesses は変更しないのでマージのため Load は 1 回のみ
+        // WatchedProcessesは変更しないのでマージのためLoadは1回のみ
         var s = SettingsManager.Load();
         s.SleepDelayMinutes    = (int)SleepDelaySlider.Value;
         s.CheckIntervalSeconds = (int)CheckIntervalSlider.Value;
@@ -117,7 +114,6 @@ public partial class MainWindow : Window
         s.ResidentMode         = ResidentModeChk.IsChecked    == true;
         s.LogEnabled           = LogEnabledChk.IsChecked      == true;
         SettingsManager.Save(s);
-        _cachedSettings = s;   // キャッシュを最新に保つ
         _monitor.ReloadSettings();
     }
 
@@ -194,16 +190,15 @@ public partial class MainWindow : Window
     private void RefreshProcessList()
     {
         var runningNames = _monitor.GetRunningWatchedProcesses();
-        RenderProcessList(_cachedSettings, runningNames);
+        var settings     = SettingsManager.Load();
+        RenderProcessList(settings, runningNames);
     }
 
-    /// <summary>
-    /// StatusUpdated イベントから呼ぶ場合。
-    /// タイマー毎のディスク I/O を避けるため、最後に保存した設定をキャッシュから使う。
-    /// </summary>
+    /// <summary>StatusUpdateから呼ぶ場合。Loadは1回で済む。</summary>
     private void RefreshProcessListWithRunning(List<string> runningNames)
     {
-        RenderProcessList(_cachedSettings, runningNames);
+        var settings = SettingsManager.Load();
+        RenderProcessList(settings, runningNames);
     }
 
     private void RenderProcessList(AppSettings settings, List<string> runningNames)
@@ -350,31 +345,21 @@ public partial class MainWindow : Window
 
     private void LoadRunningProcesses()
     {
-        // Process[] を全取得し、名前を取得後すぐに全 Dispose する
-        var procs = Process.GetProcesses();
-        try
-        {
-            _allRunningProcesses = procs
-                .Where(p => { try { return p.SessionId > 0; } catch { return false; } })
-                .Select(p => p.ProcessName)
-                .Where(n => !string.IsNullOrWhiteSpace(n))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(n => n)
-                .Select(n => new ProcessInfo(n))
-                .ToList();
-        }
-        finally
-        {
-            foreach (var p in procs) p.Dispose();
-        }
+        _allRunningProcesses = Process.GetProcesses()
+            .Where(p => { try { return p.SessionId > 0; } catch { return false; } })
+            .Select(p => { var n = p.ProcessName; p.Dispose(); return new ProcessInfo(n); })
+            .DistinctBy(p => p.Name.ToLowerInvariant())
+            .Where(p => !string.IsNullOrWhiteSpace(p.Name))
+            .OrderBy(p => p.Name)
+            .ToList();
         ApplyProcessFilter(ProcessSearchBox?.Text ?? "");
     }
 
     private void ApplyProcessFilter(string keyword)
     {
         RunningProcessListBox.Items.Clear();
-        // _cachedSettings を使いディスク I/O を排除
-        var registered = _cachedSettings.WatchedProcesses
+        var settings   = SettingsManager.Load();
+        var registered = settings.WatchedProcesses
             .Select(p => p.ProcessName.ToLowerInvariant())
             .ToHashSet();
 
@@ -462,7 +447,6 @@ public partial class MainWindow : Window
             FilePath    = string.Empty
         });
         SettingsManager.Save(settings);
-        _cachedSettings = settings;
         _monitor.ReloadSettings();
         RefreshProcessList();
         ApplyProcessFilter(ProcessSearchBox?.Text ?? "");
@@ -570,7 +554,6 @@ public partial class MainWindow : Window
             FilePath    = path
         });
         SettingsManager.Save(settings);
-        _cachedSettings = settings;
         _monitor.ReloadSettings();
 
         ExePathBox.Text = DisplayNameBox.Text = string.Empty;
@@ -589,7 +572,6 @@ public partial class MainWindow : Window
 
         settings.WatchedProcesses.Remove(target);
         SettingsManager.Save(settings);
-        _cachedSettings = settings;
         _monitor.ReloadSettings();
         RefreshProcessList();
         ApplyProcessFilter(ProcessSearchBox?.Text ?? "");

@@ -6,23 +6,31 @@ namespace SleepGuard;
 
 public partial class App : Application
 {
-    private TaskbarIcon?    _trayIcon;
-    private MonitorService? _monitorService;
-    private MainWindow?     _mainWindow;
+    private TaskbarIcon?     _trayIcon;
+    private MonitorService?  _monitorService;
+    private MainWindow?      _mainWindow;
     private System.Threading.Mutex? _mutex;
 
     private System.Drawing.Icon? _iconActive;
     private System.Drawing.Icon? _iconInactive;
     private bool _isPaused;
 
-    // ── 終了 ─────────────────────────────────────────────────────
-    /// <summary>
-    /// メニューや ×ボタン（常駐 OFF 時）から呼ばれる終了エントリポイント。
-    /// Shutdown() を呼ぶと OnExit が発火するので、クリーンアップは OnExit に一本化する。
-    /// </summary>
-    internal void RequestExit() => Shutdown();
+    internal void RequestExit()
+    {
+        // イベント購読を先に解除してDispose후の呼び出しを防ぐ
+        if (_monitorService != null)
+            _monitorService.StatusChanged -= OnMonitorStatusChanged;
+        _monitorService?.Stop();
+        _trayIcon?.Dispose();
+        _iconActive?.Dispose();
+        _iconInactive?.Dispose();
+        _iconActive   = null;
+        _iconInactive = null;
+        _mutex?.ReleaseMutex();
+        _mutex?.Dispose();
+        Shutdown();
+    }
 
-    // ── コンテキストメニュー ──────────────────────────────────────
     private System.Windows.Controls.ContextMenu BuildContextMenu()
     {
         var menu = new System.Windows.Controls.ContextMenu();
@@ -39,11 +47,11 @@ public partial class App : Application
 
     private void PopulateContextMenu(System.Windows.Controls.ContextMenu menu)
     {
-        // ── 監視プロセス ─────────────────────────────────────────
+        // ── 監視プロセス ──────────────────────────────────────────
         menu.Items.Add(new System.Windows.Controls.MenuItem
         {
-            Header     = "監視プロセス",
-            IsEnabled  = false,
+            Header    = "監視プロセス",
+            IsEnabled = false,
             FontWeight = System.Windows.FontWeights.Bold
         });
 
@@ -54,7 +62,7 @@ public partial class App : Application
         {
             menu.Items.Add(new System.Windows.Controls.MenuItem
             {
-                Header    = "  (登録なし)",
+                Header = "  (登録なし)",
                 IsEnabled = false
             });
         }
@@ -119,7 +127,6 @@ public partial class App : Application
         }
     }
 
-    // ── 起動 ─────────────────────────────────────────────────────
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -128,6 +135,7 @@ public partial class App : Application
         _mutex = new System.Threading.Mutex(true, "SleepGuard_SingleInstance", out bool createdNew);
         if (!createdNew)
         {
+            // 既に起動中 → そちらのウィンドウを前面に出して終了
             MessageBox.Show("SleepGuard は既に起動しています。\nタスクトレイを確認してください。",
                 "SleepGuard", MessageBoxButton.OK, MessageBoxImage.Information);
             _mutex.Dispose();
@@ -148,6 +156,7 @@ public partial class App : Application
 
         try
         {
+            // アイコンを起動時に一度だけ生成してキャッシュ
             _iconActive   = CreateIcon(active: true);
             _iconInactive = CreateIcon(active: false);
 
@@ -160,18 +169,25 @@ public partial class App : Application
                 Visibility  = Visibility.Visible
             };
 
-            _trayIcon.ContextMenu         = BuildContextMenu();
-            _trayIcon.TrayMouseDoubleClick += (_, _) => ShowMainWindow();
-            _trayIcon.TrayRightMouseDown   += (_, _) => RefreshContextMenu();
+            // コンテキストメニューを構築
+            _trayIcon.ContextMenu = BuildContextMenu();
 
-            _monitorService.StatusChanged += OnMonitorStatusChanged;
+            _trayIcon.TrayMouseDoubleClick  += (_, _) => ShowMainWindow();
+            _trayIcon.TrayRightMouseDown    += (_, _) => RefreshContextMenu();
+
+            _monitorService.StatusChanged  += OnMonitorStatusChanged;
             _monitorService.Start();
 
             var settings = SettingsManager.Load();
             if (settings.StartMinimized)
-                SettingsManager.WriteLog("SleepGuard 起動（トレイに格納）");
+            {
+                // 起動時トレイ格納: ウィンドウを表示しない
+                SettingsManager.WriteLog("SleepGuard 起動 (トレイに格納)");
+            }
             else
+            {
                 ShowMainWindow();
+            }
         }
         catch (Exception ex)
         {
@@ -181,32 +197,11 @@ public partial class App : Application
         }
     }
 
-    // ── 終了処理（一本化） ───────────────────────────────────────
-    protected override void OnExit(ExitEventArgs e)
-    {
-        // イベント購読を先に解除してから Stop/Dispose する
-        if (_monitorService != null)
-            _monitorService.StatusChanged -= OnMonitorStatusChanged;
-
-        _monitorService?.Stop();
-        _trayIcon?.Dispose();
-
-        _iconActive?.Dispose();
-        _iconInactive?.Dispose();
-        _iconActive   = null;
-        _iconInactive = null;
-
-        try { _mutex?.ReleaseMutex(); } catch { }
-        _mutex?.Dispose();
-
-        base.OnExit(e);
-    }
-
-    // ── トレイアイコン更新 ───────────────────────────────────────
     private void OnMonitorStatusChanged(bool isSleepPrevented)
     {
         Dispatcher.BeginInvoke(() =>
         {
+            // Dispose済みの場合はスキップ
             if (_trayIcon == null || _iconActive == null || _iconInactive == null) return;
             try
             {
@@ -219,7 +214,6 @@ public partial class App : Application
         });
     }
 
-    // ── ウィンドウ管理 ───────────────────────────────────────────
     internal void ShowMainWindow()
     {
         if (_mainWindow == null || !_mainWindow.IsLoaded)
@@ -229,7 +223,6 @@ public partial class App : Application
         _mainWindow.Activate();
     }
 
-    // ── アイコン生成 ─────────────────────────────────────────────
     private static System.Drawing.Icon CreateIcon(bool active)
     {
         try
@@ -241,9 +234,9 @@ public partial class App : Application
                 using (stream)
                 using (var icon = new System.Drawing.Icon(stream, 16, 16))
                 {
-                    return active
-                        ? (System.Drawing.Icon)icon.Clone()
-                        : ToGrayscaleIcon(icon);
+                    if (active)
+                        return (System.Drawing.Icon)icon.Clone();
+                    return ToGrayscaleIcon(icon);
                 }
             }
         }
@@ -254,12 +247,12 @@ public partial class App : Application
     private static System.Drawing.Icon ToGrayscaleIcon(System.Drawing.Icon icon)
     {
         using var src = icon.ToBitmap();
-        using var dst = new System.Drawing.Bitmap(
-            src.Width, src.Height,
+        using var dst = new System.Drawing.Bitmap(src.Width, src.Height,
             System.Drawing.Imaging.PixelFormat.Format32bppArgb);
 
-        var rect    = new System.Drawing.Rectangle(0, 0, src.Width, src.Height);
-        var fmt     = System.Drawing.Imaging.PixelFormat.Format32bppArgb;
+        // LockBitsで高速ピクセル処理
+        var rect = new System.Drawing.Rectangle(0, 0, src.Width, src.Height);
+        var fmt  = System.Drawing.Imaging.PixelFormat.Format32bppArgb;
         var srcData = src.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly,  fmt);
         var dstData = dst.LockBits(rect, System.Drawing.Imaging.ImageLockMode.WriteOnly, fmt);
         try
@@ -272,7 +265,7 @@ public partial class App : Application
                 byte b = buf[i], g = buf[i + 1], r = buf[i + 2], a = buf[i + 3];
                 byte gs = (byte)(r * 0.299 + g * 0.587 + b * 0.114);
                 buf[i] = buf[i + 1] = buf[i + 2] = gs;
-                buf[i + 3] = (byte)(a / 2);  // 半透明で非アクティブを表現
+                buf[i + 3] = (byte)(a / 2); // 半透明で非アクティブ感を表現
             }
             System.Runtime.InteropServices.Marshal.Copy(buf, 0, dstData.Scan0, bytes);
         }
@@ -317,4 +310,19 @@ public partial class App : Application
 
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr hIcon);
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        if (_monitorService != null)
+            _monitorService.StatusChanged -= OnMonitorStatusChanged;
+        _monitorService?.Stop();
+        _trayIcon?.Dispose();
+        _iconActive?.Dispose();
+        _iconInactive?.Dispose();
+        _iconActive   = null;
+        _iconInactive = null;
+        try { _mutex?.ReleaseMutex(); } catch { }
+        _mutex?.Dispose();
+        base.OnExit(e);
+    }
 }
