@@ -7,22 +7,14 @@ namespace SleepGuard;
 
 /// <summary>
 /// プロセス監視とスリープ防止を担当するサービス。
-/// 監視対象プロセスが動作中の間、tickごとに
-///   1. ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED を叩く（継続ブロック）
-///   2. SendInput でマウス移動量0を送る（アイドルタイマーリセット）
-/// プロセスが消えたら ES_CONTINUOUS のみで解除し、Windowsタイマーが自然に動き出す。
+///
+/// 10秒tickごとに監視対象プロセスを確認し、
+/// 動作中であれば SendInput でマウス移動量0を送りWindowsのアイドルタイマーをリセットする。
+/// プロセスが消えたら何もしないのでWindowsのスリープタイマーが自然に動き出す。
 /// </summary>
 public class MonitorService : IDisposable
 {
     // ── Win32 API ────────────────────────────────────────────────
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint SetThreadExecutionState(uint esFlags);
-
-    private const uint ES_CONTINUOUS        = 0x80000000u;
-    private const uint ES_SYSTEM_REQUIRED   = 0x00000001u;
-    private const uint ES_AWAYMODE_REQUIRED = 0x00000040u;
-    private const uint ES_DISPLAY_REQUIRED  = 0x00000002u;
-
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
@@ -36,15 +28,15 @@ public class MonitorService : IDisposable
     [StructLayout(LayoutKind.Sequential)]
     private struct MOUSEINPUT
     {
-        public int  dx;
-        public int  dy;
-        public uint mouseData;
-        public uint dwFlags;    // 0x0001 = MOUSEEVENTF_MOVE
-        public uint time;
+        public int    dx;
+        public int    dy;
+        public uint   mouseData;
+        public uint   dwFlags;  // 0x0001 = MOUSEEVENTF_MOVE
+        public uint   time;
         public IntPtr dwExtraInfo;
     }
 
-    // マウス移動量0の入力（staticで使い回しアロケーションなし）
+    // マウス移動量0の入力（staticで使い回し、アロケーションなし）
     private static readonly INPUT[] _mouseInput = new[]
     {
         new INPUT { type = 0, mi = new MOUSEINPUT { dwFlags = 0x0001 } }
@@ -90,7 +82,6 @@ public class MonitorService : IDisposable
 
         if (_isSleepPrevented)
         {
-            SetThreadExecutionState(ES_CONTINUOUS);
             _isSleepPrevented = false;
             StatusChanged?.Invoke(false);
             SettingsManager.WriteLog("スリープ防止 終了 — 監視停止");
@@ -98,7 +89,6 @@ public class MonitorService : IDisposable
         SettingsManager.WriteLog("SleepGuard 監視停止");
     }
 
-    /// <summary>設定変更時に呼ぶ。</summary>
     public void ReloadSettings()
     {
         var s = SettingsManager.Load();
@@ -124,13 +114,7 @@ public class MonitorService : IDisposable
 
         if (anyRunning)
         {
-            // 1. 継続ブロック
-            var flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED;
-            if (settings.PreventDisplaySleep)
-                flags |= ES_DISPLAY_REQUIRED;
-            SetThreadExecutionState(flags);
-
-            // 2. アイドルタイマーリセット（マウス移動量0）
+            // プロセスあり → マウス移動量0でアイドルタイマーリセット
             SendInput(1, _mouseInput, _inputSize);
 
             if (!_isSleepPrevented)
@@ -143,9 +127,9 @@ public class MonitorService : IDisposable
         }
         else
         {
+            // プロセスなし → 何もしない。Windowsタイマーが自然に進む。
             if (_isSleepPrevented)
             {
-                SetThreadExecutionState(ES_CONTINUOUS);
                 _isSleepPrevented = false;
                 StatusChanged?.Invoke(false);
                 SettingsManager.WriteLog("スリープ防止 終了 — プロセスなし");
