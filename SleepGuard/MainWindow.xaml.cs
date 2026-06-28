@@ -4,14 +4,15 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Shapes;
 using Microsoft.Win32;
+using System.Windows.Shapes;
 namespace SleepGuard;
 
 public partial class MainWindow : Window
 {
     private readonly MonitorService _monitor;
-    private bool _suppressSettingsChange;
+    private bool         _suppressSettingsChange;
+    private AppSettings  _cachedSettings = SettingsManager.Load();  // タイマー更新時のディスクI/O排除用
     private List<ProcessInfo> _allRunningProcesses = new();
 
     // ブラシキャッシュ（Freeze済みでGC負荷軽減・スレッドセーフ）
@@ -35,9 +36,12 @@ public partial class MainWindow : Window
         InitializeComponent();
         _monitor = monitor;
 
+        // バージョン表示
+        var ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        VersionText.Text = ver != null ? $"v{ver.Major}.{ver.Minor}.{ver.Build}" : "";
+
         // イベントはInitializeComponent後にコードで登録（XAMLパース中の発火を防ぐ）
-        SleepDelaySlider.ValueChanged    += SleepDelaySlider_ValueChanged;
-        CheckIntervalSlider.ValueChanged += CheckIntervalSlider_ValueChanged;
+        GraceMinutesSlider.ValueChanged  += GraceMinutesSlider_ValueChanged;
         PreventDisplayChk.Checked        += Settings_Changed;
         PreventDisplayChk.Unchecked      += Settings_Changed;
         StartMinimizedChk.Checked        += Settings_Changed;
@@ -48,7 +52,6 @@ public partial class MainWindow : Window
         LogEnabledChk.Unchecked          += Settings_Changed;
         StartupChk.Checked               += Startup_Changed;
         StartupChk.Unchecked             += Startup_Changed;
-        ProcessSearchBox.TextChanged     += ProcessSearchBox_TextChanged;
 
         _monitor.StatusUpdated += OnStatusUpdated;
 
@@ -75,7 +78,8 @@ public partial class MainWindow : Window
 
         LoadSettings();
         RefreshProcessList();
-        UpdateStatusUI(new MonitorStatus());
+        // ウィンドウ開き直し時も現在の実際の状態でUIを初期化する
+        UpdateStatusUI(_monitor.GetCurrentStatus());
         LoadRunningProcesses();
     }
 
@@ -84,36 +88,35 @@ public partial class MainWindow : Window
     {
         _suppressSettingsChange = true;
         var s = SettingsManager.Load();
-        SleepDelaySlider.Value      = s.SleepDelayMinutes;
-        CheckIntervalSlider.Value   = s.CheckIntervalSeconds;
+        _cachedSettings             = s;
+        GraceMinutesSlider.Value    = s.GraceMinutes;
         PreventDisplayChk.IsChecked = s.PreventDisplaySleep;
         StartMinimizedChk.IsChecked = s.StartMinimized;
         ResidentModeChk.IsChecked   = s.ResidentMode;
         LogEnabledChk.IsChecked     = s.LogEnabled;
         StartupChk.IsChecked        = StartupManager.IsRegistered();
-        SleepDelayLabel.Text        = $"{s.SleepDelayMinutes} 分";
-        CheckIntervalLabel.Text     = $"{s.CheckIntervalSeconds} 秒";
-        StatDelay.Text              = $"{s.SleepDelayMinutes} 分";
+        GraceMinutesLabel.Text      = s.GraceMinutes == 0 ? "なし" : $"{s.GraceMinutes} 分";
+        StatCheckInterval.Text      = "10 秒";
         _suppressSettingsChange = false;
     }
 
     private bool IsUiReady =>
-        SleepDelaySlider  != null && CheckIntervalSlider != null &&
+        GraceMinutesSlider  != null &&
         PreventDisplayChk != null && StartMinimizedChk   != null &&
         ResidentModeChk   != null && LogEnabledChk        != null;
 
     private void SaveCurrentSettings()
     {
         if (!IsUiReady) return;
-        // WatchedProcessesは変更しないのでマージのためLoadは1回のみ
+        // WatchedProcesses は変更しないのでマージのため Load は 1 回のみ
         var s = SettingsManager.Load();
-        s.SleepDelayMinutes    = (int)SleepDelaySlider.Value;
-        s.CheckIntervalSeconds = (int)CheckIntervalSlider.Value;
+        s.GraceMinutes         = (int)GraceMinutesSlider.Value;
         s.PreventDisplaySleep  = PreventDisplayChk.IsChecked == true;
         s.StartMinimized       = StartMinimizedChk.IsChecked  == true;
         s.ResidentMode         = ResidentModeChk.IsChecked    == true;
         s.LogEnabled           = LogEnabledChk.IsChecked      == true;
         SettingsManager.Save(s);
+        _cachedSettings = s;   // キャッシュを最新に保つ
         _monitor.ReloadSettings();
     }
 
@@ -127,9 +130,8 @@ public partial class MainWindow : Window
     private void UpdateStatusUI(MonitorStatus status)
     {
         // MonitorStatusの値を直接使用（ディスクI/Oなし）
-        StatRunningCount.Text = status.RunningProcesses.Count.ToString();
-        StatWatchedCount.Text = $"/ {status.WatchedCount} 登録";
-        StatDelay.Text        = $"{status.DelayMinutes} 分";
+        StatRunningCount.Text  = status.RunningProcesses.Count.ToString();
+        StatWatchedCount.Text  = $"/ {status.WatchedCount} 登録";
 
         if (status.IsSleepPrevented)
         {
@@ -139,14 +141,6 @@ public partial class MainWindow : Window
             StatStatusSub.Text        = "スリープをブロック中";
             StatStatusSub.Foreground  = Brush("#1A9E7A");
         }
-        else if (status.CountdownStartAt.HasValue)
-        {
-            SetStatusBadge("カウントダウン中", "#F59E0B", "#15F59E0B", "#50F59E0B");
-            StatStatusText.Text       = "猶予中";
-            StatStatusText.Foreground = Brush("#F59E0B");
-            StatStatusSub.Text        = "解除まで待機中";
-            StatStatusSub.Foreground  = Brush("#A87010");
-        }
         else
         {
             SetStatusBadge("待機中", "#B0AABF", "#20FFFFFF", "#33FFFFFF");
@@ -154,18 +148,6 @@ public partial class MainWindow : Window
             StatStatusText.Foreground = Brush("#706C90");
             StatStatusSub.Text        = "監視中";
             StatStatusSub.Foreground  = Brush("#706C90");
-        }
-
-        if (status.CountdownStartAt.HasValue && status.RemainingSeconds.HasValue)
-        {
-            CountdownBanner.Visibility = Visibility.Visible;
-            var rem = TimeSpan.FromSeconds(status.RemainingSeconds.Value);
-            CountdownText.Text =
-                $"スリープ解除まで {rem.Minutes:D2}:{rem.Seconds:D2} — 全監視プロセスが停止しています";
-        }
-        else
-        {
-            CountdownBanner.Visibility = Visibility.Collapsed;
         }
 
         RunningChipsPanel.Children.Clear();
@@ -190,15 +172,16 @@ public partial class MainWindow : Window
     private void RefreshProcessList()
     {
         var runningNames = _monitor.GetRunningWatchedProcesses();
-        var settings     = SettingsManager.Load();
-        RenderProcessList(settings, runningNames);
+        RenderProcessList(_cachedSettings, runningNames);
     }
 
-    /// <summary>StatusUpdateから呼ぶ場合。Loadは1回で済む。</summary>
+    /// <summary>
+    /// StatusUpdated イベントから呼ぶ場合。
+    /// タイマー毎のディスク I/O を避けるため、最後に保存した設定をキャッシュから使う。
+    /// </summary>
     private void RefreshProcessListWithRunning(List<string> runningNames)
     {
-        var settings = SettingsManager.Load();
-        RenderProcessList(settings, runningNames);
+        RenderProcessList(_cachedSettings, runningNames);
     }
 
     private void RenderProcessList(AppSettings settings, List<string> runningNames)
@@ -304,6 +287,7 @@ public partial class MainWindow : Window
         grid.Children.Add(info);
         grid.Children.Add(chip);
         grid.Children.Add(removeBtn);
+
         border.Child = grid;
         return border;
     }
@@ -341,40 +325,56 @@ public partial class MainWindow : Window
     }
 
     // ─── Running process picker ───────────────────────────────────
-    private record ProcessInfo(string Name);
+    private record ProcessInfo(string Name, string FilePath);
 
     private void LoadRunningProcesses()
     {
-        _allRunningProcesses = Process.GetProcesses()
-            .Where(p => { try { return p.SessionId > 0; } catch { return false; } })
-            .Select(p => { var n = p.ProcessName; p.Dispose(); return new ProcessInfo(n); })
-            .DistinctBy(p => p.Name.ToLowerInvariant())
-            .Where(p => !string.IsNullOrWhiteSpace(p.Name))
-            .OrderBy(p => p.Name)
-            .ToList();
-        ApplyProcessFilter(ProcessSearchBox?.Text ?? "");
+        // Process[] を全取得し、名前を取得後すぐに全 Dispose する
+        var procs = Process.GetProcesses();
+        try
+        {
+            _allRunningProcesses = procs
+                .Where(p => { try { return p.SessionId > 0; } catch { return false; } })
+                .Select(p =>
+                {
+                    try
+                    {
+                        return new ProcessInfo(
+                            p.ProcessName,
+                            p.MainModule?.FileName ?? string.Empty);
+                    }
+                    catch
+                    {
+                        return new ProcessInfo(p.ProcessName, string.Empty);
+                    }
+                })
+                .Where(p => !string.IsNullOrWhiteSpace(p.Name))
+                .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(x => !string.IsNullOrWhiteSpace(x.FilePath)).First())
+                .OrderBy(p => p.Name)
+                .ToList();
+        }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
+        RefreshRunningProcessList();
     }
 
-    private void ApplyProcessFilter(string keyword)
+    private void RefreshRunningProcessList()
     {
         RunningProcessListBox.Items.Clear();
-        var settings   = SettingsManager.Load();
-        var registered = settings.WatchedProcesses
-            .Select(p => p.ProcessName.ToLowerInvariant())
-            .ToHashSet();
 
-        var filtered = string.IsNullOrWhiteSpace(keyword)
-            ? _allRunningProcesses
-            : _allRunningProcesses.Where(p =>
-                p.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        foreach (var processInfo in _allRunningProcesses)
+            RunningProcessListBox.Items.Add(CreateRunningProcessRow(processInfo, IsRegisteredProcess(processInfo)));
+    }
 
-        foreach (var pi in filtered)
-            RunningProcessListBox.Items.Add(
-                CreateRunningProcessRow(pi, registered.Contains(pi.Name.ToLowerInvariant())));
-
-        if (SearchPlaceholder != null)
-            SearchPlaceholder.Visibility = string.IsNullOrEmpty(ProcessSearchBox?.Text)
-                ? Visibility.Visible : Visibility.Collapsed;
+    private bool IsRegisteredProcess(ProcessInfo processInfo)
+    {
+        return _cachedSettings.WatchedProcesses.Any(watched =>
+            watched.ProcessName.Equals(processInfo.Name, StringComparison.OrdinalIgnoreCase) &&
+            (string.IsNullOrWhiteSpace(watched.FilePath) ||
+             string.Equals(NormalizeFilePath(watched.FilePath), NormalizeFilePath(processInfo.FilePath), StringComparison.OrdinalIgnoreCase)));
     }
 
     private UIElement CreateRunningProcessRow(ProcessInfo pi, bool alreadyRegistered)
@@ -434,7 +434,9 @@ public partial class MainWindow : Window
 
         var settings = SettingsManager.Load();
         if (settings.WatchedProcesses.Any(p =>
-            p.ProcessName.Equals(pi.Name, StringComparison.OrdinalIgnoreCase)))
+            p.ProcessName.Equals(pi.Name, StringComparison.OrdinalIgnoreCase) &&
+            (string.IsNullOrWhiteSpace(p.FilePath) ||
+             string.Equals(p.FilePath, pi.FilePath, StringComparison.OrdinalIgnoreCase))))
         {
             AddLogLine($"すでに登録済み: {pi.Name}", "warn");
             return;
@@ -444,13 +446,15 @@ public partial class MainWindow : Window
         {
             DisplayName = pi.Name,
             ProcessName = pi.Name,
-            FilePath    = string.Empty
+            FilePath    = pi.FilePath
         });
         SettingsManager.Save(settings);
+        _cachedSettings = settings;
         _monitor.ReloadSettings();
         RefreshProcessList();
-        ApplyProcessFilter(ProcessSearchBox?.Text ?? "");
-        AddLogLine($"追加: {pi.Name} (実行中リストより)");
+        RefreshRunningProcessList();
+        AddLogLine($"追加: {pi.Name} (実行中リストより)" +
+            (string.IsNullOrWhiteSpace(pi.FilePath) ? string.Empty : $" / {pi.FilePath}"));
     }
 
     private void RefreshRunningProcesses_Click(object sender, RoutedEventArgs e)
@@ -459,13 +463,6 @@ public partial class MainWindow : Window
         AddLogLine("実行中プロセス一覧を更新しました");
     }
 
-    private void ProcessSearchBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        ApplyProcessFilter(ProcessSearchBox.Text);
-        if (SearchPlaceholder != null)
-            SearchPlaceholder.Visibility = string.IsNullOrEmpty(ProcessSearchBox.Text)
-                ? Visibility.Visible : Visibility.Collapsed;
-    }
 
     // ─── Log ─────────────────────────────────────────────────────
     private void AddLogLine(string message, string type = "normal")
@@ -509,57 +506,71 @@ public partial class MainWindow : Window
     {
         var dlg = new OpenFileDialog
         {
-            Filter = "実行ファイル (*.exe)|*.exe|すべてのファイル (*.*)|*.*",
-            Title  = "監視するプロセスのEXEファイルを選択"
+            Filter = "実行ファイル (*.exe)|*.exe",
+            Title = "監視するプロセスのEXEファイルを選択"
         };
+
         if (dlg.ShowDialog() == true)
-        {
-            ExePathBox.Text = dlg.FileName;
-            if (string.IsNullOrWhiteSpace(DisplayNameBox.Text))
-                DisplayNameBox.Text =
-                    System.IO.Path.GetFileNameWithoutExtension(dlg.FileName);
-        }
+            TryAddWatchedProcess(dlg.FileName);
     }
 
-    private void AddProcessButton_Click(object sender, RoutedEventArgs e)
+    private bool TryAddWatchedProcess(string path, string? displayName = null)
     {
         AddErrorText.Visibility = Visibility.Collapsed;
-        var path        = ExePathBox.Text.Trim();
-        var displayName = DisplayNameBox.Text.Trim();
 
-        if (string.IsNullOrEmpty(path))
+        if (string.IsNullOrWhiteSpace(path))
         {
-            ShowAddError("EXEファイルのパスを入力してください"); return;
-        }
-        if (!System.IO.Path.GetFileName(path)
-                .EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-        {
-            ShowAddError(".exe ファイルを指定してください"); return;
+            ShowAddError("EXEファイルを選択してください");
+            return false;
         }
 
-        var processName = System.IO.Path.GetFileNameWithoutExtension(path);
-        if (string.IsNullOrEmpty(displayName)) displayName = processName;
+        var normalizedPath = NormalizeFilePath(path);
+        if (!System.IO.Path.GetExtension(normalizedPath).Equals(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowAddError(".exe ファイルを指定してください");
+            return false;
+        }
+
+        var processName = System.IO.Path.GetFileNameWithoutExtension(normalizedPath);
+        var resolvedDisplayName = string.IsNullOrWhiteSpace(displayName) ? processName : displayName.Trim();
 
         var settings = SettingsManager.Load();
-        if (settings.WatchedProcesses.Any(p =>
-            p.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase)))
+        var alreadyExists = settings.WatchedProcesses.Any(p =>
+            p.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(NormalizeFilePath(p.FilePath), normalizedPath, StringComparison.OrdinalIgnoreCase));
+
+        if (alreadyExists)
         {
-            ShowAddError($"'{displayName}' はすでに登録されています"); return;
+            ShowAddError($"'{resolvedDisplayName}' はすでに登録されています");
+            return false;
         }
 
         settings.WatchedProcesses.Add(new WatchedProcess
         {
-            DisplayName = displayName,
+            DisplayName = resolvedDisplayName,
             ProcessName = processName,
-            FilePath    = path
+            FilePath = normalizedPath
         });
-        SettingsManager.Save(settings);
-        _monitor.ReloadSettings();
 
-        ExePathBox.Text = DisplayNameBox.Text = string.Empty;
+        SettingsManager.Save(settings);
+        _cachedSettings = settings;
+        _monitor.ReloadSettings();
         RefreshProcessList();
-        ApplyProcessFilter(ProcessSearchBox?.Text ?? "");
-        AddLogLine($"追加: {displayName} ({processName}.exe)");
+        RefreshRunningProcessList();
+        AddLogLine($"追加: {resolvedDisplayName} ({System.IO.Path.GetFileName(normalizedPath)}) / {normalizedPath}");
+        return true;
+    }
+
+    private static string NormalizeFilePath(string path)
+    {
+        try
+        {
+            return System.IO.Path.GetFullPath(path.Trim().Trim('"'));
+        }
+        catch
+        {
+            return path.Trim().Trim('"');
+        }
     }
 
     private void RemoveProcess_Click(object sender, RoutedEventArgs e)
@@ -572,27 +583,21 @@ public partial class MainWindow : Window
 
         settings.WatchedProcesses.Remove(target);
         SettingsManager.Save(settings);
+        _cachedSettings = settings;
         _monitor.ReloadSettings();
         RefreshProcessList();
-        ApplyProcessFilter(ProcessSearchBox?.Text ?? "");
+        RefreshRunningProcessList();
         AddLogLine($"削除: {target.DisplayName}");
     }
 
-    private void SleepDelaySlider_ValueChanged(
-        object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (SleepDelayLabel == null) return;
-        var val = (int)e.NewValue;
-        SleepDelayLabel.Text = $"{val} 分";
-        if (StatDelay != null) StatDelay.Text = $"{val} 分";
-        if (!_suppressSettingsChange && IsUiReady) SaveCurrentSettings();
-    }
 
-    private void CheckIntervalSlider_ValueChanged(
+
+    private void GraceMinutesSlider_ValueChanged(
         object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (CheckIntervalLabel == null) return;
-        CheckIntervalLabel.Text = $"{(int)e.NewValue} 秒";
+        if (GraceMinutesLabel == null) return;
+        var min = (int)e.NewValue;
+        GraceMinutesLabel.Text = min == 0 ? "なし" : $"{min} 分";
         if (!_suppressSettingsChange && IsUiReady) SaveCurrentSettings();
     }
 

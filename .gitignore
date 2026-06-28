@@ -1,18 +1,7 @@
-# Build outputs
-bin/
-obj/
+.vs/
+**/bin/
+**/obj/
 *.user
 *.suo
-.vs/
-
-# NuGet
-*.nupkg
-packages/
-*.lock.json
-
-# OS
-Thumbs.db
-.DS_Store
-
-# ユーザー設定（個人の設定はリポジトリに含めない）
-**/AppData/
+*.cache
+*.pdb

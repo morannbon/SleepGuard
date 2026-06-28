@@ -13,11 +13,11 @@ public class WatchedProcess
     [JsonPropertyName("displayName")]
     public string DisplayName { get; set; } = string.Empty;
 
-    /// <summary>プロセス名 (拡張子なし, 例: notepad)</summary>
+    /// <summary>プロセス名（拡張子なし。例: notepad）</summary>
     [JsonPropertyName("processName")]
     public string ProcessName { get; set; } = string.Empty;
 
-    /// <summary>元のファイルパス (参照用)</summary>
+    /// <summary>元のファイルパス（参照用）</summary>
     [JsonPropertyName("filePath")]
     public string FilePath { get; set; } = string.Empty;
 }
@@ -28,11 +28,7 @@ public class AppSettings
     [JsonPropertyName("watchedProcesses")]
     public List<WatchedProcess> WatchedProcesses { get; set; } = new();
 
-    /// <summary>スリープ解除までの猶予時間 (分)</summary>
-    [JsonPropertyName("sleepDelayMinutes")]
-    public int SleepDelayMinutes { get; set; } = 5;
-
-    /// <summary>プロセス確認間隔 (秒)</summary>
+    /// <summary>プロセス確認間隔（秒）</summary>
     [JsonPropertyName("checkIntervalSeconds")]
     public int CheckIntervalSeconds { get; set; } = 10;
 
@@ -44,26 +40,35 @@ public class AppSettings
     [JsonPropertyName("startMinimized")]
     public bool StartMinimized { get; set; } = false;
 
-    /// <summary>ログを有効にするか</summary>
+    /// <summary>動作ログを記録するか</summary>
     [JsonPropertyName("logEnabled")]
     public bool LogEnabled { get; set; } = true;
 
-    /// <summary>タスクトレイに常駐するか (false = ×ボタンで完全終了)</summary>
+    /// <summary>タスクトレイに常駐するか（false = × ボタンで完全終了）</summary>
     [JsonPropertyName("residentMode")]
     public bool ResidentMode { get; set; } = true;
+
+    /// <summary>全プロセス停止後にスリープ防止を維持する猶予時間（分）。0 = 即時解除。</summary>
+    [JsonPropertyName("graceMinutes")]
+    public int GraceMinutes { get; set; } = 0;
 }
 
 /// <summary>
-/// 設定の読み書きを担当。
-/// 改善点: WriteLogでLoad()を毎回呼ばずフラグをキャッシュ。
+/// 設定の読み書きとログ管理を担当。
+/// WriteLog はディスク I/O を最小化するため LogEnabled フラグをキャッシュする。
 /// </summary>
-public class SettingsManager
+public static class SettingsManager
 {
     private static readonly string ConfigDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SleepGuard");
 
     private static readonly string ConfigPath = Path.Combine(ConfigDir, "settings.json");
-    private static readonly string LogPath    = Path.Combine(ConfigDir, "sleepguard.log");
+
+    // ログはEXEと同フォルダに出力する
+    private static readonly string LogPath =
+        Path.Combine(
+            AppContext.BaseDirectory,
+            "sleepguard.log");
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -71,10 +76,9 @@ public class SettingsManager
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    // ログ有効フラグのキャッシュ（WriteLogのたびにディスクを読まないため）
-    private static bool _logEnabled = true;
-    // ローテーションチェックを100回に1回に間引く
-    private static int _logWriteCount = 0;
+    // WriteLog のたびにディスクを読まないようフラグをキャッシュ
+    private static bool _logEnabled    = true;
+    private static int  _logWriteCount = 0;
 
     public static AppSettings Load()
     {
@@ -83,7 +87,7 @@ public class SettingsManager
             if (File.Exists(ConfigPath))
             {
                 var json = File.ReadAllText(ConfigPath);
-                var s = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts) ?? new AppSettings();
+                var s    = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts) ?? new AppSettings();
                 _logEnabled = s.LogEnabled;
                 return s;
             }
@@ -101,8 +105,8 @@ public class SettingsManager
     }
 
     /// <summary>
-    /// ログ書き込み。毎回Load()しないのでディスクI/Oを削減。
-    /// ログファイルが1MBを超えたら古い行を削除してローテーション。
+    /// ログを 1 行追記する。
+    /// 100 回に 1 回だけファイルサイズをチェックし、1 MB 超で末尾 500 行に切り詰める。
     /// </summary>
     public static void WriteLog(string message)
     {
@@ -110,7 +114,6 @@ public class SettingsManager
         try
         {
             Directory.CreateDirectory(ConfigDir);
-            // 100回に1回だけローテーションチェック（FileInfo生成コストを削減）
             if (++_logWriteCount >= 100)
             {
                 _logWriteCount = 0;
@@ -122,32 +125,28 @@ public class SettingsManager
         catch { }
     }
 
-    /// <summary>
-    /// ログが1MBを超えたら末尾500行だけ残してローテーション。
-    /// </summary>
     private static void RotateLogIfNeeded()
     {
         try
         {
             if (!File.Exists(LogPath)) return;
-            var info = new FileInfo(LogPath);
-            if (info.Length < 1024 * 1024) return; // 1MB未満はスキップ
+            if (new FileInfo(LogPath).Length < 1024 * 1024) return;
 
             var lines = File.ReadAllLines(LogPath, System.Text.Encoding.UTF8);
             if (lines.Length <= 500) return;
 
-            // 末尾500行を残す
-            var kept = lines.Skip(lines.Length - 500).ToArray();
-            File.WriteAllLines(LogPath, kept, System.Text.Encoding.UTF8);
+            File.WriteAllLines(LogPath,
+                lines.Skip(lines.Length - 500).ToArray(),
+                System.Text.Encoding.UTF8);
         }
         catch { }
     }
 
-    public static string LogFilePath    => LogPath;
+    public static string LogFilePath     => LogPath;
     public static string ConfigDirectory => ConfigDir;
 }
 
-/// <summary>Windowsスタートアップ登録を管理 (HKCU\...\Run)</summary>
+/// <summary>Windows スタートアップ登録（HKCU\...\Run）を管理する。</summary>
 public static class StartupManager
 {
     private const string RegKey  = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
