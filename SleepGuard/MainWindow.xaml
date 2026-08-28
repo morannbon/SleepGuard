@@ -452,27 +452,27 @@
                 <StackPanel>
                     <TextBlock Text="設定" Foreground="#FFFFFF" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,16"/>
 
-                    <!-- 終了後の猶予 -->
-                    <Grid Margin="0,0,0,0">
+                    <!-- Check interval -->
+                    <Grid Margin="0,0,0,14">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="160"/>
+                            <ColumnDefinition Width="180"/>
                             <ColumnDefinition Width="60"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="終了後の猶予" Foreground="#FFFFFF" FontSize="13" FontWeight="SemiBold"/>
-                            <TextBlock Text="全プロセス停止後にスリープ防止を維持する時間"
+                            <TextBlock Text="確認間隔" Foreground="#FFFFFF" FontSize="13" FontWeight="SemiBold"/>
+                            <TextBlock Text="プロセスをチェックする頻度"
                                        Foreground="#ADADC8" FontFamily="Consolas" FontSize="10" Margin="0,2,0,0"/>
                         </StackPanel>
-                        <Slider x:Name="GraceMinutesSlider" Grid.Column="1"
-                                Minimum="0" Maximum="60" Value="0"
+                        <Slider x:Name="CheckIntervalSlider" Grid.Column="1"
+                                Minimum="5" Maximum="60" Value="10"
                                 Style="{StaticResource DarkSlider}"
-                                TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="GraceMinutesLabel" Grid.Column="2" Text="なし"
+                                TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="CheckIntervalLabel" Grid.Column="2" Text="10 秒"
                                    Foreground="#A78BFA" FontFamily="Consolas" FontSize="13"
                                    VerticalAlignment="Center" HorizontalAlignment="Right"/>
                     </Grid>
-                    <Border Height="1" Background="#2AFFFFFF" Margin="0,14,0,14"/>
+                    <Border Height="1" Background="#2AFFFFFF" Margin="0,0,0,14"/>
 
                     <!-- Checkboxes -->
                     <Grid>

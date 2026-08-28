@@ -188,7 +188,8 @@ public partial class App : Application
         if (_monitorService != null)
             _monitorService.StatusChanged -= OnMonitorStatusChanged;
 
-        _monitorService?.Stop();
+        _monitorService?.Dispose();
+        _monitorService = null;
         _trayIcon?.Dispose();
 
         _iconActive?.Dispose();

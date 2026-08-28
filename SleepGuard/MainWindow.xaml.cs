@@ -41,7 +41,7 @@ public partial class MainWindow : Window
         VersionText.Text = ver != null ? $"v{ver.Major}.{ver.Minor}.{ver.Build}" : "";
 
         // イベントはInitializeComponent後にコードで登録（XAMLパース中の発火を防ぐ）
-        GraceMinutesSlider.ValueChanged  += GraceMinutesSlider_ValueChanged;
+        CheckIntervalSlider.ValueChanged += CheckIntervalSlider_ValueChanged;
         PreventDisplayChk.Checked        += Settings_Changed;
         PreventDisplayChk.Unchecked      += Settings_Changed;
         StartMinimizedChk.Checked        += Settings_Changed;
@@ -89,19 +89,19 @@ public partial class MainWindow : Window
         _suppressSettingsChange = true;
         var s = SettingsManager.Load();
         _cachedSettings             = s;
-        GraceMinutesSlider.Value    = s.GraceMinutes;
+        CheckIntervalSlider.Value   = s.CheckIntervalSeconds;
         PreventDisplayChk.IsChecked = s.PreventDisplaySleep;
         StartMinimizedChk.IsChecked = s.StartMinimized;
         ResidentModeChk.IsChecked   = s.ResidentMode;
         LogEnabledChk.IsChecked     = s.LogEnabled;
         StartupChk.IsChecked        = StartupManager.IsRegistered();
-        GraceMinutesLabel.Text      = s.GraceMinutes == 0 ? "なし" : $"{s.GraceMinutes} 分";
-        StatCheckInterval.Text      = "10 秒";
+        CheckIntervalLabel.Text     = $"{s.CheckIntervalSeconds} 秒";
+        StatCheckInterval.Text      = $"{s.CheckIntervalSeconds} 秒";
         _suppressSettingsChange = false;
     }
 
     private bool IsUiReady =>
-        GraceMinutesSlider  != null &&
+        CheckIntervalSlider != null &&
         PreventDisplayChk != null && StartMinimizedChk   != null &&
         ResidentModeChk   != null && LogEnabledChk        != null;
 
@@ -110,7 +110,7 @@ public partial class MainWindow : Window
         if (!IsUiReady) return;
         // WatchedProcesses は変更しないのでマージのため Load は 1 回のみ
         var s = SettingsManager.Load();
-        s.GraceMinutes         = (int)GraceMinutesSlider.Value;
+        s.CheckIntervalSeconds = (int)CheckIntervalSlider.Value;
         s.PreventDisplaySleep  = PreventDisplayChk.IsChecked == true;
         s.StartMinimized       = StartMinimizedChk.IsChecked  == true;
         s.ResidentMode         = ResidentModeChk.IsChecked    == true;
@@ -132,6 +132,7 @@ public partial class MainWindow : Window
         // MonitorStatusの値を直接使用（ディスクI/Oなし）
         StatRunningCount.Text  = status.RunningProcesses.Count.ToString();
         StatWatchedCount.Text  = $"/ {status.WatchedCount} 登録";
+        StatCheckInterval.Text = $"{status.CheckIntervalSeconds} 秒";
 
         if (status.IsSleepPrevented)
         {
@@ -287,7 +288,6 @@ public partial class MainWindow : Window
         grid.Children.Add(info);
         grid.Children.Add(chip);
         grid.Children.Add(removeBtn);
-
         border.Child = grid;
         return border;
     }
@@ -591,13 +591,11 @@ public partial class MainWindow : Window
     }
 
 
-
-    private void GraceMinutesSlider_ValueChanged(
+    private void CheckIntervalSlider_ValueChanged(
         object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (GraceMinutesLabel == null) return;
-        var min = (int)e.NewValue;
-        GraceMinutesLabel.Text = min == 0 ? "なし" : $"{min} 分";
+        if (CheckIntervalLabel == null) return;
+        CheckIntervalLabel.Text = $"{(int)e.NewValue} 秒";
         if (!_suppressSettingsChange && IsUiReady) SaveCurrentSettings();
     }
 

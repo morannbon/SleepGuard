@@ -47,10 +47,6 @@ public class AppSettings
     /// <summary>タスクトレイに常駐するか（false = × ボタンで完全終了）</summary>
     [JsonPropertyName("residentMode")]
     public bool ResidentMode { get; set; } = true;
-
-    /// <summary>全プロセス停止後にスリープ防止を維持する猶予時間（分）。0 = 即時解除。</summary>
-    [JsonPropertyName("graceMinutes")]
-    public int GraceMinutes { get; set; } = 0;
 }
 
 /// <summary>
