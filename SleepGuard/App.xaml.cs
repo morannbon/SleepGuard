@@ -8,6 +8,7 @@ public partial class App : Application
 {
     private TaskbarIcon?    _trayIcon;
     private MonitorService? _monitorService;
+    private PowerStateTracker? _powerStateTracker;
     private MainWindow?     _mainWindow;
     private System.Threading.Mutex? _mutex;
 
@@ -151,6 +152,8 @@ public partial class App : Application
             _iconActive   = CreateIcon(active: true);
             _iconInactive = CreateIcon(active: false);
 
+            _powerStateTracker = new PowerStateTracker();
+
             _monitorService = new MonitorService();
 
             _trayIcon = new TaskbarIcon
@@ -187,6 +190,9 @@ public partial class App : Application
         // イベント購読を先に解除してから Stop/Dispose する
         if (_monitorService != null)
             _monitorService.StatusChanged -= OnMonitorStatusChanged;
+
+        _powerStateTracker?.Dispose();
+        _powerStateTracker = null;
 
         _monitorService?.Dispose();
         _monitorService = null;

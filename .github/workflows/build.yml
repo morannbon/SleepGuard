@@ -1,0 +1,32 @@
+name: SleepGuard Build
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, x86]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build with zero warnings
+        shell: pwsh
+        run: |
+          dotnet build SleepGuard.sln --configuration Release --no-incremental -p:Platform=${{ matrix.platform }} -p:CopyLocalLockFileAssemblies=true -warnaserror
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed or produced warnings' }
+      - name: Prepare package
+        shell: pwsh
+        run: ./.github/scripts/package.ps1 -Platform '${{ matrix.platform }}' -RefName '${{ github.ref_name }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SleepGuard-${{ matrix.platform }}-package
+          path: package/*.zip
+          if-no-files-found: error

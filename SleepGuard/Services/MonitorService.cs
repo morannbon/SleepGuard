@@ -68,6 +68,8 @@ public class MonitorService : IDisposable
     private bool _disposed;
     private int _tickCounter;
     private DateTime? _lastDiagnosticLogAt;
+    private readonly object _matchLogLock = new();
+    private readonly Dictionary<string, string> _lastMatchDiagnostics = new(StringComparer.OrdinalIgnoreCase);
 
     // ── イベント ─────────────────────────────────────────────────
     public event Action<bool>?         StatusChanged;
@@ -209,7 +211,12 @@ public class MonitorService : IDisposable
                 if (TryMatchWatchedProcess(wp, procs, out var diagnostics))
                 {
                     running.Add(wp.DisplayName);
-                    SettingsManager.WriteLog($"監視一致 {diagnostics}");
+                    LogMatchIfChanged(wp, diagnostics);
+                }
+                else
+                {
+                    lock (_matchLogLock)
+                        _lastMatchDiagnostics.Remove(wp.Id);
                 }
             }
             catch (Exception ex)
@@ -223,6 +230,20 @@ public class MonitorService : IDisposable
             }
         }
         return running;
+    }
+
+    private void LogMatchIfChanged(WatchedProcess wp, string diagnostics)
+    {
+        lock (_matchLogLock)
+        {
+            if (_lastMatchDiagnostics.TryGetValue(wp.Id, out var previous) &&
+                string.Equals(previous, diagnostics, StringComparison.Ordinal))
+                return;
+
+            _lastMatchDiagnostics[wp.Id] = diagnostics;
+        }
+
+        SettingsManager.WriteLog($"監視一致 {diagnostics}");
     }
 
     private static bool TryMatchWatchedProcess(WatchedProcess wp, Process[] processes, out string diagnostics)
