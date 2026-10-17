@@ -1,1 +1,0 @@
-SleepGuard includes Hardcodet.NotifyIcon.Wpf 1.1.0. See licenses/Hardcodet.NotifyIcon.Wpf_LICENSE.txt for its license. Microsoft .NET libraries are provided under their package license terms; binary packages include the corresponding notices.

@@ -5,3 +5,6 @@
 *.suo
 *.cache
 *.pdb
+
+# Generated binary packages
+package/
