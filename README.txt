@@ -1,8 +1,6 @@
-# SleepGuard 1.6.3（開発中）
+# SleepGuard 1.6.2
 
-最新公開版は [v1.6.2](https://github.com/morannbon/SleepGuard/releases/tag/v1.6.2) です。以下は公開済みv1.6.2の更新内容です。
-
-## 最新公開版 SleepGuard 1.6.2 の更新内容
+## SleepGuard 1.6.2 の更新内容
 
 公開日: 2026-11-02
 
@@ -112,4 +110,4 @@ SleepGuard本体を更新しても、通常は監視対象などの設定を引�
 
 ## バージョン
 
-SleepGuard 1.6.3（開発中。未公開）
+SleepGuard 1.6.2
