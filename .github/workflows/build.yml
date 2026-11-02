@@ -5,6 +5,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   build:
     runs-on: windows-2022
@@ -20,7 +22,7 @@ jobs:
       - name: Build with zero warnings
         shell: pwsh
         run: |
-          dotnet build SleepGuard.sln --configuration Release --no-incremental -p:Platform=${{ matrix.platform }} -p:CopyLocalLockFileAssemblies=true -warnaserror
+          dotnet build SleepGuard.sln --configuration Release -t:Rebuild -p:Platform=${{ matrix.platform }} -p:CopyLocalLockFileAssemblies=true -p:SleepGuardDeveloperDiagnostics=false -warnaserror
           if ($LASTEXITCODE -ne 0) { throw 'Build failed or produced warnings' }
       - name: Prepare package
         shell: pwsh

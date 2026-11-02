@@ -13,11 +13,13 @@
     <Platforms>x64;x86</Platforms>
     <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
     <SelfContained>false</SelfContained>
-    <Version>1.6.1</Version>
-    <AssemblyVersion>1.6.1.0</AssemblyVersion>
-    <FileVersion>1.6.1.0</FileVersion>
-    <InformationalVersion>1.6.1</InformationalVersion>
+    <Version>1.6.2</Version>
+    <AssemblyVersion>1.6.2.0</AssemblyVersion>
+    <FileVersion>1.6.2.0</FileVersion>
+    <InformationalVersion>1.6.2</InformationalVersion>
     <Description>SleepGuard - プロセス監視スリープ防止ツール</Description>
+    <SleepGuardDeveloperDiagnostics Condition="'$(SleepGuardDeveloperDiagnostics)'==''">false</SleepGuardDeveloperDiagnostics>
+    <DefineConstants Condition="'$(SleepGuardDeveloperDiagnostics)'=='true'">$(DefineConstants);SLEEP_GUARD_DEVELOPER_DIAGNOSTICS</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Platform)'=='x64'">

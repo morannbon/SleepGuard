@@ -3,11 +3,11 @@ $ErrorActionPreference='Stop'
 [xml]$project=Get-Content SleepGuard/SleepGuard.csproj
 $v=[string]$project.Project.PropertyGroup[0].Version
 if($RefName.StartsWith('v') -and $RefName -cne "v$v"){throw 'Tag and product version differ'}
-$bin="SleepGuard/bin/$Platform/Release/net8.0-windows/win-$Platform"
+$bin=(Resolve-Path -LiteralPath "SleepGuard/bin/$Platform/Release/net8.0-windows/win-$Platform").Path
 foreach($n in @('SleepGuard.exe','SleepGuard.dll','SleepGuard.deps.json','SleepGuard.runtimeconfig.json','Hardcodet.NotifyIcon.Wpf.dll')){if(!(Test-Path "$bin/$n")){throw "Missing dependency $n"}}
 if([Diagnostics.FileVersionInfo]::GetVersionInfo("$bin/SleepGuard.dll").FileVersion -ne "$v.0"){throw 'Version mismatch'}
 if((Get-FileHash README.md).Hash -ne (Get-FileHash README.txt).Hash){throw 'README mismatch'}
-$out="package/SleepGuard_v${v}_$Platform"
+$out=Join-Path (Get-Location).Path "package/SleepGuard_v${v}_$Platform"
 if(Test-Path $out){throw 'Staging exists'}
 New-Item -ItemType Directory -Force "$out/licenses"|Out-Null
 Get-ChildItem $bin -Recurse -File|Where-Object {$_.Extension -notin @('.pdb','.log','.tmp','.bak')}|ForEach-Object{$rel=[IO.Path]::GetRelativePath((Resolve-Path $bin),$_.FullName);if($rel -match '^runtimes[\\/]([^\\/]+)' -and $Matches[1] -notin @("win-$Platform",'win')){return};$dest=Join-Path $out $rel;New-Item -ItemType Directory -Force (Split-Path $dest)|Out-Null;Copy-Item -LiteralPath $_.FullName -Destination $dest}

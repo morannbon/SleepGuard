@@ -66,10 +66,12 @@ public class MonitorService : IDisposable
     private bool      _isSleepPrevented;
     private List<string> _lastRunningProcs = new();
     private bool _disposed;
+#if SLEEP_GUARD_DEVELOPER_DIAGNOSTICS
     private int _tickCounter;
     private DateTime? _lastDiagnosticLogAt;
     private readonly object _matchLogLock = new();
     private readonly Dictionary<string, string> _lastMatchDiagnostics = new(StringComparer.OrdinalIgnoreCase);
+#endif
 
     // ── イベント ─────────────────────────────────────────────────
     public event Action<bool>?         StatusChanged;
@@ -156,14 +158,18 @@ public class MonitorService : IDisposable
         lock (_settingsLock) { settings = _settings; }
 
         var now = DateTime.Now;
+#if SLEEP_GUARD_DEVELOPER_DIAGNOSTICS
         _tickCounter++;
+#endif
 
         if (settings.WatchedProcesses.Count == 0)
         {
             ApplySleepState(false, null, "watched-empty");
 
             var empty = new List<string>();
+#if SLEEP_GUARD_DEVELOPER_DIAGNOSTICS
             WriteDiagnosticSnapshotIfNeeded(now, settings, empty, "watched-empty");
+#endif
             PublishStatusIfChanged(settings, empty, now, true);
             return;
         }
@@ -184,7 +190,9 @@ public class MonitorService : IDisposable
             shouldBlock ? "watched-running" : "watched-stopped",
             runningProcs);
 
+#if SLEEP_GUARD_DEVELOPER_DIAGNOSTICS
         WriteDiagnosticSnapshotIfNeeded(now, settings, runningProcs, blockStateChanged ? "block-state-changed" : (procsChanged ? "running-changed" : null));
+#endif
         PublishStatusIfChanged(settings, runningProcs, now, forceStatus || procsChanged || blockStateChanged);
     }
 
@@ -208,6 +216,7 @@ public class MonitorService : IDisposable
             try
             {
                 procs = Process.GetProcessesByName(wp.ProcessName);
+#if SLEEP_GUARD_DEVELOPER_DIAGNOSTICS
                 if (TryMatchWatchedProcess(wp, procs, out var diagnostics))
                 {
                     running.Add(wp.DisplayName);
@@ -218,6 +227,10 @@ public class MonitorService : IDisposable
                     lock (_matchLogLock)
                         _lastMatchDiagnostics.Remove(wp.Id);
                 }
+#else
+                if (TryMatchWatchedProcess(wp, procs))
+                    running.Add(wp.DisplayName);
+#endif
             }
             catch (Exception ex)
             {
@@ -232,6 +245,7 @@ public class MonitorService : IDisposable
         return running;
     }
 
+#if SLEEP_GUARD_DEVELOPER_DIAGNOSTICS
     private void LogMatchIfChanged(WatchedProcess wp, string diagnostics)
     {
         lock (_matchLogLock)
@@ -280,6 +294,34 @@ public class MonitorService : IDisposable
         diagnostics += $" expectedPath={expectedPath} match=none";
         return false;
     }
+
+#else
+    private static bool TryMatchWatchedProcess(WatchedProcess wp, Process[] processes)
+    {
+        if (processes.Length == 0)
+            return false;
+
+        var expectedPath = NormalizePath(wp.FilePath);
+        if (string.IsNullOrWhiteSpace(expectedPath))
+            return true;
+
+        foreach (var process in processes)
+        {
+            try
+            {
+                var actualPath = NormalizePath(process.MainModule?.FileName);
+                if (string.Equals(actualPath, expectedPath, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            catch
+            {
+                // パスを取得できないプロセスは一致判定から除外する。
+            }
+        }
+
+        return false;
+    }
+#endif
 
     private static string NormalizePath(string? path)
     {
@@ -470,6 +512,7 @@ public class MonitorService : IDisposable
         });
     }
 
+#if SLEEP_GUARD_DEVELOPER_DIAGNOSTICS
     private void WriteDiagnosticSnapshotIfNeeded(DateTime now, AppSettings settings, List<string> runningProcs, string? reason)
     {
         var shouldWrite = reason != null
@@ -484,6 +527,8 @@ public class MonitorService : IDisposable
         SettingsManager.WriteLog(
             $"監視診断 reason={reason ?? "periodic"} tick={_tickCounter} watched={settings.WatchedProcesses.Count} running={runningProcs.Count} blocked={_isSleepPrevented} mode=power-request-hold watchedList=[{string.Join(" | ", settings.WatchedProcesses.Select(w => $"{w.DisplayName}:{w.ProcessName}:{NormalizePath(w.FilePath)}"))}] runningList=[{string.Join(", ", runningProcs)}]");
     }
+
+#endif
 
     // ── 現在状態スナップショット ──────────────────────────────────
     /// <summary>ウィンドウ再表示時の UI 初期化に使用する。</summary>

@@ -10,16 +10,31 @@ namespace SleepGuard;
 /// </summary>
 public sealed class PowerStateTracker : IDisposable
 {
+    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ResumeGapThreshold = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan ResumeHistoryLookback = TimeSpan.FromMinutes(30);
+
     private readonly string _bootStatePath =
         Path.Combine(SettingsManager.ConfigDirectory, "last-os-boot.txt");
+    private readonly object _stateLock = new();
+    private readonly System.Threading.Timer _heartbeatTimer;
 
+    private DateTimeOffset _lastHeartbeatAt = DateTimeOffset.Now;
+    private DateTimeOffset? _lastSuspendAt;
+    private DateTimeOffset? _lastRecordedResumeAt;
     private bool _disposed;
 
     public PowerStateTracker()
     {
         LogStartupState();
         ScanRecentPowerEvents("startup", TimeSpan.FromHours(12));
+
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        _heartbeatTimer = new System.Threading.Timer(
+            OnHeartbeat,
+            null,
+            HeartbeatInterval,
+            HeartbeatInterval);
     }
 
     private void LogStartupState()
@@ -62,14 +77,24 @@ public sealed class PowerStateTracker : IDisposable
         {
             if (e.Mode == PowerModes.Suspend)
             {
+                var now = DateTimeOffset.Now;
+                lock (_stateLock)
+                {
+                    if (_disposed)
+                        return;
+
+                    _lastSuspendAt = now;
+                }
+
                 SettingsManager.WriteLog(
                     "システム状態 action=suspend source=SystemEvents.PowerModeChanged");
             }
             else if (e.Mode == PowerModes.Resume)
             {
-                SettingsManager.WriteLog(
-                    "システム状態 action=resume source=SystemEvents.PowerModeChanged");
-                ScanRecentPowerEvents("resume", TimeSpan.FromMinutes(30));
+                // PowerModeChanged の Resume は環境によって実際の復帰より遅れて届くことがある。
+                // 通知時刻をそのまま復帰時刻にせず、Windows の復帰履歴を正本として確定する。
+                if (!TryRecordResumeFromHistory("SystemEvents.PowerModeChanged"))
+                    TryRecordResumeFallback(DateTimeOffset.Now, "SystemEvents.PowerModeChanged");
             }
         }
         catch (Exception ex)
@@ -77,6 +102,134 @@ public sealed class PowerStateTracker : IDisposable
             SettingsManager.WriteLog(
                 $"システム状態 action=power-event success=False error={ex.GetType().Name}:{ex.Message}");
         }
+    }
+
+    private void OnHeartbeat(object? state)
+    {
+        try
+        {
+            DateTimeOffset now;
+            DateTimeOffset previousHeartbeat;
+            bool resumePending;
+
+            lock (_stateLock)
+            {
+                if (_disposed)
+                    return;
+
+                now = DateTimeOffset.Now;
+                previousHeartbeat = _lastHeartbeatAt;
+                _lastHeartbeatAt = now;
+                resumePending = IsResumePendingLocked();
+            }
+
+            if (!resumePending)
+                return;
+
+            // スリープ中は Timer が進まないため、復帰後の最初の Tick では大きな時間差が出る。
+            // Resume 通知を待たずに Windows 電源履歴から実際の復帰時刻を確定する。
+            if (TryRecordResumeFromHistory("heartbeat"))
+                return;
+
+            if (now - previousHeartbeat >= ResumeGapThreshold)
+                TryRecordResumeFallback(now, "heartbeat-gap");
+        }
+        catch (Exception ex)
+        {
+            SettingsManager.WriteLog(
+                $"システム状態 action=resume-detect success=False error={ex.GetType().Name}:{ex.Message}");
+        }
+    }
+
+    private bool TryRecordResumeFromHistory(string detectedBy)
+    {
+        DateTimeOffset? suspendAt;
+        DateTimeOffset? lastResumeAt;
+
+        lock (_stateLock)
+        {
+            if (_disposed || !IsResumePendingLocked())
+                return false;
+
+            suspendAt = _lastSuspendAt;
+            lastResumeAt = _lastRecordedResumeAt;
+        }
+
+        try
+        {
+            var sinceUtc = DateTime.UtcNow - ResumeHistoryLookback;
+            if (suspendAt.HasValue)
+            {
+                var suspendSinceUtc = suspendAt.Value.UtcDateTime.AddMinutes(-1);
+                if (suspendSinceUtc > sinceUtc)
+                    sinceUtc = suspendSinceUtc;
+            }
+
+            var events = new List<PowerEventInfo>();
+            ReadEvents(
+                "*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]",
+                sinceUtc,
+                events);
+
+            var actualResume = events
+                .Where(x => !suspendAt.HasValue || x.TimeCreated >= suspendAt.Value)
+                .Where(x => !lastResumeAt.HasValue || x.TimeCreated > lastResumeAt.Value)
+                .OrderBy(x => x.TimeCreated)
+                .LastOrDefault();
+
+            if (actualResume == null)
+                return false;
+
+            return TryCommitResume(
+                actualResume.TimeCreated,
+                "WindowsEventLog.Power-Troubleshooter",
+                detectedBy);
+        }
+        catch (Exception ex)
+        {
+            SettingsManager.WriteLog(
+                $"システム状態 action=resume-history success=False error={ex.GetType().Name}:{ex.Message}");
+            return false;
+        }
+    }
+
+    private void TryRecordResumeFallback(DateTimeOffset detectedAt, string source)
+    {
+        lock (_stateLock)
+        {
+            if (_disposed || !IsResumePendingLocked())
+                return;
+        }
+
+        TryCommitResume(detectedAt, source, source);
+    }
+
+    private bool TryCommitResume(DateTimeOffset actualResumeAt, string source, string detectedBy)
+    {
+        lock (_stateLock)
+        {
+            if (_disposed || !IsResumePendingLocked())
+                return false;
+
+            if (_lastSuspendAt.HasValue && actualResumeAt < _lastSuspendAt.Value)
+                return false;
+
+            if (_lastRecordedResumeAt.HasValue && actualResumeAt <= _lastRecordedResumeAt.Value)
+                return false;
+
+            _lastRecordedResumeAt = actualResumeAt;
+        }
+
+        SettingsManager.WriteLog(
+            $"システム状態 action=resume time={actualResumeAt:yyyy-MM-dd HH:mm:ss zzz}");
+        ScanRecentPowerEvents("resume", ResumeHistoryLookback);
+        return true;
+    }
+
+    private bool IsResumePendingLocked()
+    {
+        return _lastSuspendAt.HasValue &&
+            (!_lastRecordedResumeAt.HasValue || _lastRecordedResumeAt.Value < _lastSuspendAt.Value);
     }
 
     private static void ScanRecentPowerEvents(string reason, TimeSpan lookback)
@@ -136,7 +289,7 @@ public sealed class PowerStateTracker : IDisposable
                 break;
 
             output.Add(new PowerEventInfo(
-                created,
+                new DateTimeOffset(created),
                 record.ProviderName ?? "unknown",
                 record.Id));
         }
@@ -144,12 +297,17 @@ public sealed class PowerStateTracker : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
-            return;
+        lock (_stateLock)
+        {
+            if (_disposed)
+                return;
 
+            _disposed = true;
+        }
+
+        _heartbeatTimer.Dispose();
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-        _disposed = true;
     }
 
-    private sealed record PowerEventInfo(DateTime TimeCreated, string Provider, int EventId);
+    private sealed record PowerEventInfo(DateTimeOffset TimeCreated, string Provider, int EventId);
 }
